@@ -1,15 +1,13 @@
-import json
 import os
 import r2pipe
 import networkx as nx
 
-
-import networkx as nx
 from rich import print
 from rich.tree import Tree
 from typing import List
 from dataclasses import dataclass
 
+from helpers.log import logger
 
 @dataclass
 class Function:
@@ -32,10 +30,11 @@ class DependencyGraph:
     def __init__(self, path):
         self.enumerate_binaries(path)
         # self.binaries_with_exports = self.find_binaries_with_exports_and_system(self.all_binaries, self.find_paths_to)
-        self.G = self.build_dependency_graph(self.all_binaries)
-        self.sorted_binaries = self.topologically_sort_graph(self.G)
+        self.functions_digraph = self.build_dependency_graph(self.all_binaries)
+        self.sorted_binaries = self.topologically_sort_graph(self.functions_digraph)
         self.function_graphs = self.build_function_graphs(self.sorted_binaries)
         self.find_all_paths_across_binaries(self.function_graphs, "main", "sym.imp.execl")
+
 
     def enumerate_binaries(self, path):
 
@@ -44,7 +43,7 @@ class DependencyGraph:
                 if os.access(os.path.join(dirpath, file), os.X_OK):
                     self.all_binaries.append(os.path.join(dirpath, file))
 
-        print(f"Found: {self.all_binaries}")
+        logger.info(f"Found: {self.all_binaries}")
 
 
     def find_binaries_with_exports_and_system(self, binaries, find_paths_to):
@@ -62,7 +61,7 @@ class DependencyGraph:
 
 
     def build_dependency_graph(self, binaries):
-        G = nx.DiGraph()
+        functions_digraph = nx.DiGraph()
         basename_to_fullpath = {os.path.basename(path): path for path in self.all_binaries}
 
         for binary in binaries:
@@ -80,23 +79,21 @@ class DependencyGraph:
             for lib in imported_libs:
                 basename = os.path.basename(lib)
                 if basename in basename_to_fullpath:
-                    print(lib)
+                    logger.info(lib)
                     full_path = basename_to_fullpath[basename]
                     dependencies_to_keep.append(full_path)
-                    G.add_edge(binary, full_path)
+                    functions_digraph.add_edge(binary, full_path)
                 else:
-                    print(f"Skipping {lib} because it is not in the list of binaries")
+                    logger.info(f"Skipping {lib} because it is not in the list of binaries")
+
+        logger.info(f"Dependency graph:")
+        for node in functions_digraph.nodes:
+            print(self.build_rich_tree(functions_digraph, node))
+        return functions_digraph
 
 
-
-        print(f"Dependency graph:")
-        for node in G.nodes:
-            print(self.build_rich_tree(G, node))
-        return G
-
-
-    def topologically_sort_graph(self, G):
-        return list(nx.topological_sort(G))
+    def topologically_sort_graph(self, functions_digraph):
+        return list(nx.topological_sort(functions_digraph))
 
 
     def find_exporting_binary(self, function_name, all_binaries):
@@ -116,6 +113,7 @@ class DependencyGraph:
     def simplify_name(self, function_name):
         return function_name.replace("sym.imp.", "").replace("sym.", "").replace("imp.", "")
 
+
     def get_function_list(self, binary):
         r2 = r2pipe.open(binary, flags=["-2"])  # disable errors
         r2.cmd("aaa")
@@ -128,34 +126,36 @@ class DependencyGraph:
 
         return r2, functions, exports
 
+
     def create_graph(self, functions, binary):
-        G = nx.DiGraph()
+        functions_digraph = nx.DiGraph()
         for function in functions:
             fn_name = self.simplify_name(function['name'])
-            G.add_node((fn_name, binary))
-        return G
+            functions_digraph.add_node((fn_name, binary))
+        return functions_digraph
 
-    def save_path(self, new_path, name, binary, G):
+
+    def save_path(self, new_path, name, binary, functions_digraph):
         if len(new_path) > 1:
             for i in range(len(new_path) - 1):
-                G.add_edge(new_path[i], new_path[i + 1])
+                functions_digraph.add_edge(new_path[i], new_path[i + 1])
         elif new_path[0] != (name, binary):
-            G.add_edge(new_path[0], (name, binary))
+            functions_digraph.add_edge(new_path[0], (name, binary))
 
 
-    def process_reference(self, r2, binary, unsanitized_name, exports, new_path, G):
+    def process_reference(self, r2, binary, unsanitized_name, exports, new_path, functions_digraph):
         name = self.simplify_name(unsanitized_name)
 
         if name in new_path:
             return
 
-        corresponding_node = self.find_corresponding_node(name, binary, G)
+        corresponding_node = self.find_corresponding_node(name, binary, functions_digraph)
 
         if corresponding_node is not None:
             if name in exports:  # If this function is exported, save the path
-                self.save_path(new_path, name, binary, G)
+                self.save_path(new_path, name, binary, functions_digraph)
             else:
-                self.find_paths(r2, binary, unsanitized_name, new_path, exports, G)
+                self.find_paths(r2, binary, unsanitized_name, new_path, exports, functions_digraph)
 
 
     def get_library_if_imported(self, current_function_name, binary):
@@ -164,12 +164,12 @@ class DependencyGraph:
         for bin_name in self.binaries:
             found = False
             if current_function_name in bin_name.imports:
-                print(f"Function {current_function_name} is imported by {bin_name.name}")
+                logger.info(f"Function {current_function_name} is imported by {bin_name.name}")
                 for bin2 in self.binaries:
                     if bin2.name == bin_name.name:
                         continue
                     if current_function_name in bin2.exports:
-                        print(f"Function {current_function_name} is exported by {bin2.name}")
+                        logger.info(f"Function {current_function_name} is exported by {bin2.name}")
                         fn_and_binary_names = (current_function_name, bin2.name)
                         found = True
                         break
@@ -179,7 +179,7 @@ class DependencyGraph:
         return fn_and_binary_names
 
 
-    def find_paths(self, r2, binary, current_function: str, path, exports, G):
+    def find_paths(self, r2, binary, current_function: str, path, exports, functions_digraph):
 
         current_function_name = self.simplify_name(current_function)
         current_tuple = self.get_library_if_imported(current_function_name, binary)
@@ -195,32 +195,29 @@ class DependencyGraph:
 
         for ref in refs:
             unsanitized_name = ref['fcn_name'] if 'fcn_name' in ref else ref['refname']
-            self.process_reference(r2, binary, unsanitized_name, exports, path + [current_tuple], G)
+            self.process_reference(r2, binary, unsanitized_name, exports, path + [current_tuple], functions_digraph)
 
-    def add_paths_to_graph(self, r2, binary, functions, exports, G):
-
+    def add_paths_to_graph(self, r2, binary, functions, exports, functions_digraph):
 
         for function in functions:
-            self.find_paths(r2, binary, function['name'], [], exports, G)
-        return G
+            self.find_paths(r2, binary, function['name'], [], exports, functions_digraph)
+        return functions_digraph
+
 
     def build_function_graphs(self, binaries):
         function_graphs = {}
 
         for binary in binaries:
-            print(f"Analyzing {binary}")
+            logger.info(f"Analyzing {binary}")
 
             r2, functions, exports = self.get_function_list(binary)
-            G = self.create_graph(functions, binary)
-            G = self.add_paths_to_graph(r2, binary, functions, exports, G)
+            functions_digraph = self.create_graph(functions, binary)
+            functions_digraph = self.add_paths_to_graph(r2, binary, functions, exports, functions_digraph)
 
-            function_graphs[binary] = G
-
-            for node in G.nodes:
-                if G.out_degree(node) > 0:
-                    print(self.build_rich_tree(G, node))
+            function_graphs[binary] = functions_digraph
 
         return function_graphs
+
 
     def find_path_in_binary(self, binary_graphs, binary, start_func, end_func):
         # Ensure the binary and the functions exist
@@ -255,14 +252,15 @@ class DependencyGraph:
         for binary, graph in binary_graphs.items():
             aggregate_graph = nx.compose(aggregate_graph, graph)
 
-        print(f"Aggregate graph across all binaries:")
+        logger.info(f"Aggregate graph across all binaries:")
         for node in aggregate_graph.nodes:
+
             # only print if the node has edges
             if aggregate_graph.out_degree(node) > 0:
                 if node[0] in ["system", "popen", "execl", "exec", "execve", "memcpy"]:
                     print(self.build_rich_tree(aggregate_graph, node))
 
-        # Use NetworkX to find all paths between the two functions
+        # find all paths between the two functions
         all_paths = list(nx.all_simple_paths(aggregate_graph, start_func, end_func))
 
         return all_paths
@@ -279,10 +277,11 @@ class DependencyGraph:
 
         return tree
 
-    def find_corresponding_node(self, name, binary, G):
+
+    def find_corresponding_node(self, name, binary, functions_digraph):
 
         for b in self.sorted_binaries:
-            if G.has_node((name, b)):
+            if functions_digraph.has_node((name, b)):
                 return (name, b)
         return None
 
@@ -296,12 +295,12 @@ class DependencyGraph:
         for bin_name in self.binaries:
             found = False
             if current_function_name in bin_name.imports:
-                print(f"Function {current_function_name} is imported by {bin_name.name}")
+                logger.info(f"Function {current_function_name} is imported by {bin_name.name}")
                 for bin2 in self.binaries:
                     if bin2.name == bin_name.name:
                         continue
                     if current_function_name in bin2.exports:
-                        print(f"Function {current_function_name} is exported by {bin2.name}")
+                        logger.info(f"Function {current_function_name} is exported by {bin2.name}")
                         current_tuple = (current_function_name, bin2.name)
                         found = True
                         break
@@ -309,14 +308,14 @@ class DependencyGraph:
                     break
 
         if current_tuple in path:
-            print(f"Found a cycle: {path}")
+            logger.info(f"Found a cycle: {path}")
             return
 
         # Get all references to this function
         refs = r2.cmdj(f"axtj @ {current_function}")
 
         if len(refs) == 0:
-            print(f"No more xrefs to {current_function} {path}")
+            logger.info(f"No more xrefs to {current_function} {path}")
             return
 
         for ref in refs:
@@ -324,23 +323,23 @@ class DependencyGraph:
             name = self.simplify_name(unsanitized_name)
 
             if name in path:
-                print(
+                logger.info(
                     f"Skipping {name} because it is the same as the current function: {path}, name: {name} current_function_name: {current_function_name}")
-                print(refs)
+                logger.info(refs)
                 continue
 
-            corresponding_node = self.find_corresponding_node(name, binary, G)
+            corresponding_node = self.find_corresponding_node(name, binary, functions_digraph)
 
             if corresponding_node is not None:
                 new_path = path + [current_tuple]
                 if name in exports:  # If this function is exported, save the path
                     if len(new_path) > 1:
                         for i in range(len(new_path) - 1):
-                            # print(f"Adding codepath: {new_path[i]} -> {new_path[i + 1]}")
-                            G.add_edge(new_path[i], new_path[i + 1])
+                            # logger.info(f"Adding codepath: {new_path[i]} -> {new_path[i + 1]}")
+                            functions_digraph.add_edge(new_path[i], new_path[i + 1])
                     elif new_path[0] != (name, binary):
-                        # print(f"Adding codepath simple: {new_path[0]} -> {(name, binary)}")
-                        G.add_edge(new_path[0], (name, binary))
+                        # logger.info(f"Adding codepath simple: {new_path[0]} -> {(name, binary)}")
+                        functions_digraph.add_edge(new_path[0], (name, binary))
                 else:
                     find_paths(binary, unsanitized_name, new_path)
     """

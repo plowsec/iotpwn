@@ -2,7 +2,7 @@ import argparse
 import os
 import r2pipe
 
-from dependency_graph import DependencyGraph
+from core.dependency_graph import DependencyGraph
 
 
 def analyze_binary(binary_path):
