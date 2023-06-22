@@ -147,12 +147,13 @@ def main():
         r2.quit()
 
     if args.directory and args.function:
-
        walk_directory(args.directory, args.function)
+
     elif args.directory and args.auto:
 
         print("Autopwning...")
         DependencyGraph(args.directory)
+
 
 if __name__ == "__main__":
     main()
