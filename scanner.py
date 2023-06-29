@@ -3,6 +3,8 @@ import os
 import r2pipe
 
 from core.dependency_graph import DependencyGraph
+from core.recon import FwRecon
+from helpers.log import logger
 
 
 def analyze_binary(binary_path):
@@ -46,7 +48,7 @@ def find_paths_to_func(r2, target_func_addr, visited=None, path=None):
 
     for caller in callers:
         if 'fcn_addr' in caller and caller['fcn_addr'] not in visited:  # Check if the function is visited
-            print(f"Found xref to {hex(target_func_addr)}: {caller}. path= {' -> '.join(hex(addr) for addr in path)}")
+            logger.info(f"Found xref to {hex(target_func_addr)}: {caller}. path= {' -> '.join(hex(addr) for addr in path)}")
             newpaths = find_paths_to_func(r2, caller['fcn_addr'], visited, path)
             for newpath in newpaths:
                 paths.append(newpath)
@@ -80,9 +82,9 @@ def walk_directory(directory, function):
                 r2 = analyze_binary(full_path)
                 paths = find_paths_to_func(r2, function)
                 if paths:
-                    print(f"In binary {full_path}, paths to function {function}:")
+                    logger.info(f"In binary {full_path}, paths to function {function}:")
                     for path in paths:
-                        print(" -> ".join(path))
+                        logger.info(" -> ".join(path))
                 r2.quit()
 
 
@@ -93,7 +95,7 @@ def find_sources(r2):
     all_fns = r2.cmdj("aflj")
     for fn in all_fns:
         if "main" in fn["name"]:
-            print(fn)
+            logger.info(fn)
             sources[fn["offset"]] = fn["name"]
 
     all_exported_fn = r2.cmdj("iEj")
@@ -107,19 +109,19 @@ def show_paths_to_function(r2, args):
 
     fn_addr = get_func_addr(r2, args.function)
     if fn_addr is None:
-        print("This function is never called by the binary")
+        logger.info("This function is never called by the binary")
         return
     paths = find_paths_to_func(r2, fn_addr)
     all_sources = find_sources(r2)
     if paths:
-        print(f"In binary {args.binary}, paths to function {args.function}:")
+        logger.info(f"In binary {args.binary}, paths to function {args.function}:")
         for path in paths:
             is_from_source = False
             if any(p in all_sources for p in path):
-                print(f"Reachable from this source: {all_sources[path[-1]]}")
-            print(" -> ".join(hex(addr) for addr in path))
+                logger.info(f"Reachable from this source: {all_sources[path[-1]]}")
+            logger.info(" -> ".join(hex(addr) for addr in path))
     else:
-        print(f"No paths found to function {args.function} in binary {args.binary}")
+        logger.info(f"No paths found to function {args.function} in binary {args.binary}")
 
 
 def main():
@@ -130,6 +132,8 @@ def main():
     parser.add_argument("-l", "--libraries", action="store_true", help="List all imported libraries")
     parser.add_argument("-i", "--imports", action="store_true", help="List all imported functions")
     parser.add_argument("-a", "--auto", action="store_true", help="Autopwn")
+    parser.add_argument("-r", "--recon", action="store_true", help="Enumerate all interesting binaries in the folder")
+    parser.add_argument("-e", "--export", action="store_true", help="Find which binary exports the provided function")
     args = parser.parse_args()
 
     if args.binary:
@@ -139,20 +143,35 @@ def main():
 
         elif args.libraries:
             libraries = get_imported_libraries(r2)
-            print(f"Imported libraries: {libraries}")
+            logger.info(f"Imported libraries: {libraries}")
 
         elif args.imports:
             functions = get_imported_functions(r2)
-            print(f"Imported functions: {functions}")
+            logger.info(f"Imported functions: {functions}")
+
         r2.quit()
 
-    if args.directory and args.function:
-       walk_directory(args.directory, args.function)
+    if args.directory and args.function and not args.export:
+        walk_directory(args.directory, args.function)
 
     elif args.directory and args.auto:
 
-        print("Autopwning...")
+        logger.info("Autopwning...")
         DependencyGraph(args.directory)
+    elif args.directory and args.recon:
+        logger.info("Recon...")
+        binaries = FwRecon.enumerate_binaries(args.directory)
+        FwRecon.find_interesting_binaries(binaries)
+
+    elif args.export and args.function:
+        binaries = FwRecon.enumerate_binaries(args.directory)
+        for binary in binaries:
+            r2 = r2pipe.open(binary, flags=["-2"])
+            exports = r2.cmdj("iEj")
+            for export in exports:
+                if export["name"] == args.function:
+                    logger.info(f"Function {args.function} is exported by {binary}")
+                    break
 
 
 if __name__ == "__main__":

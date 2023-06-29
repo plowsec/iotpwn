@@ -5,21 +5,10 @@ import networkx as nx
 from rich import print
 from rich.tree import Tree
 from typing import List, Callable, Dict, Tuple, Set, Optional
-from dataclasses import dataclass
 
 from helpers.log import logger
+from core.models import Binary, Function
 
-@dataclass
-class Function:
-    name: str
-    binary: str
-
-
-@dataclass
-class Binary:
-    name: str
-    imports: set
-    exports: set
 
 
 class DependencyGraph:
@@ -48,26 +37,6 @@ class DependencyGraph:
                     self.all_binaries.append(os.path.join(dirpath, file))
 
         logger.info(f"Found: {self.all_binaries}")
-
-
-    def find_binaries_with_exports_and_system(self, binaries: List[str], find_paths_to: Callable) -> List[str]:
-
-        """
-        Returns a list of binaries that contain exports and have a path to the system.
-        :param binaries: list, List of binary files.
-        :param find_paths_to: function, Function to determine paths to the system.
-        """
-        relevant_binaries = []
-
-        for binary in binaries:
-            r2 = r2pipe.open(binary)
-            exports = r2.cmdj("iEj")  # Exports as JSON
-
-            if exports:
-                if find_paths_to(binary, "system"):
-                    relevant_binaries.append(binary)
-
-        return relevant_binaries
 
 
     def build_dependency_graph(self, binaries: List[str]) -> nx.DiGraph:
@@ -350,7 +319,7 @@ class DependencyGraph:
             # Use NetworkX to find a path between the two functions
             return nx.shortest_path(aggregate_graph, start_func, end_func)
         except nx.NetworkXNoPath:
-            return None
+            return []
 
 
     def find_all_paths_across_binaries(self, binary_graphs: Dict[str, nx.DiGraph], start_func: str, end_func: str) -> \
