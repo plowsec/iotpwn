@@ -164,14 +164,8 @@ def main():
         FwRecon.find_interesting_binaries(binaries)
 
     elif args.export and args.function:
-        binaries = FwRecon.enumerate_binaries(args.directory)
-        for binary in binaries:
-            r2 = r2pipe.open(binary, flags=["-2"])
-            exports = r2.cmdj("iEj")
-            for export in exports:
-                if export["name"] == args.function:
-                    logger.info(f"Function {args.function} is exported by {binary}")
-                    break
+        FwRecon.get_binaries_that_export_this_function(args.directory, args.function)
+
 
 
 if __name__ == "__main__":

@@ -1,3 +1,7 @@
+import json
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+
 import r2pipe
 import os
 import subprocess
@@ -6,11 +10,47 @@ from typing import List, Callable, Dict, Tuple, Set, Optional
 
 from config.config import COMMAND_EXEC_FUNCTIONS
 from helpers.log import logger
+import concurrent.futures
 
 
 class FwRecon:
 
 
+    @staticmethod
+    def get_binaries_that_export_this_function(folder, function):
+
+        def analyze_binary(binary, fn):
+            try:
+                #logger.debug(f"Analyzing {binary} for {fn}...")
+                r2 = r2pipe.open(binary, flags=["-2"])
+                exports = r2.cmd("iEj")
+
+                if exports is None:
+                    return False
+
+                try:
+                    exports = json.loads(exports)
+                except:
+                    return False
+
+                all_exports = [export["name"] for export in exports]
+                if fn in all_exports:
+                    logger.info(f"Function {fn} is exported by {binary}")
+                    r2.quit()
+                    return True
+            except:
+                logger.error(f"Exception while analyzing {binary}: {traceback.format_exc()}")
+            r2.quit()
+            return False
+
+        binaries = FwRecon.enumerate_binaries(folder)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(analyze_binary, binary, function) for binary in binaries}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    logger.error(f'Generated an exception: {exc}')
 
     @staticmethod
     def is_executable_or_library(filepath: str) -> bool:
@@ -33,12 +73,26 @@ class FwRecon:
         :param path: str, The file system path to walk through.
         """
 
+        logger.info(f"Enumerating binaries in {path}...")
+
+        def process_file(file):
+            if FwRecon.is_executable_or_library(file):
+                return file
+            return None
+
+        all_files = [os.path.join(dirpath, filename) for dirpath, dirnames, filenames in os.walk(path) for filename
+                     in filenames]
         all_binaries = []
 
-        for dirpath, dirnames, filenames in os.walk(path):
-            for file in filenames:
-                if FwRecon.is_executable_or_library(os.path.join(dirpath, file)):
-                    all_binaries.append(os.path.join(dirpath, file))
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(process_file, file) for file in all_files}
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    result = future.result()
+                    if result is not None:
+                        all_binaries.append(result)
+                except Exception as exc:
+                    logger.error(f'Generated an exception: {exc}')
 
         logger.info(f"Found: {all_binaries}")
         return all_binaries
