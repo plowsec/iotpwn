@@ -11,7 +11,7 @@ from typing import List, Callable, Dict, Tuple, Set, Optional
 from config.config import COMMAND_EXEC_FUNCTIONS
 from helpers.log import logger
 import concurrent.futures
-
+from core.pathfinder import show_paths_to_function
 
 class FwRecon:
 
@@ -105,7 +105,7 @@ class FwRecon:
         :param binaries:
         :return:
         """
-        relevant_binaries = {} # dict of binary: list of interesting functions
+        relevant_binaries = {}  # dict of binary: list of interesting functions
 
         for binary in binaries:
             r2 = r2pipe.open(binary, flags=["-2"])
@@ -118,25 +118,29 @@ class FwRecon:
                     if fn in all_imports_as_string:
                         logger.info(f"Found interesting function {fn} in {binary}")
                         relevant_binaries[binary].append(fn)
+
+        # log the non-empty revelant binaries as a JSON object, filter out the empty ones
+        relevant_binaries = {k: v for k, v in relevant_binaries.items() if v}
         logger.info(f"Found: {relevant_binaries}")
+        return relevant_binaries
 
 
     @staticmethod
-    def find_binaries_with_exports_and_system(binaries: List[str], find_paths_to: Callable) -> List[str]:
+    def find_binaries_with_exports_and_system(binaries: List[str]) -> List[str]:
         """
         Returns a list of binaries that contain exports and have a path to the system.
         :param binaries: list, List of binary files.
-        :param find_paths_to: function, Function to determine paths to the system.
         """
         relevant_binaries = []
 
         for binary in binaries:
             r2 = r2pipe.open(binary)
+            r2.cmd("aaa")
             exports = r2.cmdj("iEj")  # Exports as JSON
 
             if exports:
                 for fn in COMMAND_EXEC_FUNCTIONS:
-                    if find_paths_to(binary, fn):
+                    if show_paths_to_function(r2, binary, fn):
                         logger.log(f"Found interesting function {fn} in {binary}")
                         relevant_binaries.append(binary)
                         break
