@@ -66,7 +66,7 @@ class FwRecon:
         return 'executable' in output or 'shared object' in output
 
     @staticmethod
-    def enumerate_binaries(path: str) -> List[str]:
+    def enumerate_binaries(path: str, extension="") -> List[str]:
 
         """
         Walks through a given path and appends any executables to the list 'all_binaries'.
@@ -84,15 +84,20 @@ class FwRecon:
                      in filenames]
         all_binaries = []
 
-        with ThreadPoolExecutor() as executor:
-            futures = {executor.submit(process_file, file) for file in all_files}
-            for future in concurrent.futures.as_completed(futures):
-                try:
-                    result = future.result()
-                    if result is not None:
-                        all_binaries.append(result)
-                except Exception as exc:
-                    logger.error(f'Generated an exception: {exc}')
+        if extension == "":
+            with ThreadPoolExecutor() as executor:
+                futures = {executor.submit(process_file, file) for file in all_files}
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result is not None:
+                            all_binaries.append(result)
+                    except Exception as exc:
+                        logger.error(f'Generated an exception: {exc}')
+        else:
+            for file in all_files:
+                if file.endswith(extension):
+                    all_binaries.append(file)
 
         logger.info(f"Found: {all_binaries}")
         return all_binaries

@@ -133,6 +133,15 @@ def show_paths_to_function(r2, binary, function):
         logger.info(f"No paths found to function {function} in binary {binary}")
 
 
+def is_64bit(binary_path):
+
+    r2 = r2pipe.open(binary_path)
+    arch_info = r2.cmdj('ij')
+    arch = arch_info.get('bin', {}).get('arch')
+    bits = arch_info.get('bin', {}).get('bits')
+    return arch == 'x86' and bits == 64
+
+
 def get_arg_register(arch_info):
     arch = arch_info.get('bin', {}).get('arch')
     bits = arch_info.get('bin', {}).get('bits')

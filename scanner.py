@@ -6,7 +6,7 @@ from core.recon import FwRecon
 from helpers.log import logger
 from config.config import COMMAND_EXEC_FUNCTIONS
 from core.pathfinder import analyze_binary, get_imported_libraries, get_imported_functions, show_paths_to_function, walk_directory
-
+from core.ast_analyzer import batch_decompile, analyze_code
 
 def main():
     parser = argparse.ArgumentParser()
@@ -22,6 +22,10 @@ def main():
     # add an argument for finding libraries that have paths between exports and interesting functions
     parser.add_argument("-R", "--recon2", action="store_true", help="Enumerate all binaries in the folder and find paths between exports and interesting functions")
 
+    # add an argument to mass decompile and analyze binaries
+    parser.add_argument("-D", "--decompile", action="store_true", help="Decompile and analyze all binaries in the folder")
+    parser.add_argument("-p", "--parameter", help="Parameter to search for in the function call", default="")
+    parser.add_argument("-E", "--extensions", help="Extensions to search for in the folder", default="")
     args = parser.parse_args()
 
     if args.binary:
@@ -39,8 +43,34 @@ def main():
 
         r2.quit()
 
-    if args.directory and args.function and not args.export:
+    if args.directory and args.function and (not args.export and not args.decompile):
         walk_directory(args.directory, args.function)
+
+    elif args.directory and args.decompile:
+
+        # check arguments
+        if not args.function:
+            logger.error("Please provide a function name with -f")
+            return
+
+        if len(args.parameter) == 0:
+            logger.error("Please provide a parameter name with -p")
+            return
+
+        logger.info("Saving results to results.csv")
+        # create a csv file
+        with open("results.csv", "w") as f:
+            f.write("Binary,Function,Line,Metric\n")
+
+        binaries = FwRecon.enumerate_binaries(args.directory, args.extensions)
+        decompiled_codes = batch_decompile(binaries)
+        for binary, code in decompiled_codes.items():
+
+            with open(code, "r") as f:
+                decompiled_code = f.read()
+
+            logger.info(f"Analyzing {binary}...")
+            analyze_code("results.csv", binary, decompiled_code, args.function, args.parameter)
 
     elif args.directory and args.recon2:
         binaries = FwRecon.enumerate_binaries(args.directory)

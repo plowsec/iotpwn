@@ -1,0 +1,4 @@
+r2pipe
+networkx[default]
+rich
+tree_sitter
