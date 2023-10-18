@@ -4,6 +4,7 @@ import traceback
 import json
 import os
 import typing
+from collections import deque
 
 from tree_sitter import Language, Parser
 
@@ -11,11 +12,17 @@ from helpers.log import logger
 from core.pathfinder import is_64bit
 
 def build_c_parser():
+
+    build_path = "build/my-language.so"
+    # check if linux but not macos
+    if os.name == "posix" and os.uname().sysname == "Linux":
+        build_path = "build_linux/my-language.so"
+
     Language.build_library(
-        'build/my-languages.so',
+        build_path,
         ['vendor/tree-sitter-c']
     )
-    C_LANGUAGE = Language('build/my-languages.so', 'c')
+    C_LANGUAGE = Language(build_path, 'c')
     parser = Parser()
     parser.set_language(C_LANGUAGE)
     return parser
@@ -80,62 +87,72 @@ def get_child_with_partial_type(node, target_type):
     return None
 
 
-def handle_call_expression(source_code, enclosing_function_node, enclosing_function_name, node, target_function, target_parameter):
-
+def handle_call_expression(source_code, enclosing_function_node, enclosing_function_name, node, target_function,
+                           target_parameter, pre_log):
     function_identifier_node = get_node_by_type(node, "identifier")
     function_name = get_node_text(source_code, function_identifier_node)
+
     logger.info(f"Found called function {function_name}")
+
     metrics = []
+    if function_name == target_function:
 
-    if function_name != target_function:
-        return metrics
+        if target_parameter == "":
+            pos = node.start_point
+            metric = pos[1] - enclosing_function_node.start_point[1]
+            metrics.append((enclosing_function_name, pre_log.copy(), metric))
+            return metrics
 
-    for child in node.children:
-
-        if child.type != "argument_list":
-            continue
-
-        for arg in child.children:
-
-            # Handle identifier type in arguments
-            if arg.type != "string_literal":
+        for child in node.children:
+            if child.type != "argument_list":
                 continue
 
-            param_value = get_node_text(source_code, arg)
-            logger.info(f"Found string literal: {param_value}")
+            for arg in child.children:
+                if arg.type != "string_literal":
+                    continue
 
-            if param_value == target_parameter:
-                logger.info(f"Found target parameter {param_value}")
-                pos = child.start_point
-                metric = pos[1] - enclosing_function_node.start_point[1]
-                metrics.append((enclosing_function_name, metric))
+                param_value = get_node_text(source_code, arg)
+                logger.info(f"Found string literal: {param_value}")
+
+                if param_value == target_parameter:
+                    logger.info(f"Found target parameter {param_value}")
+                    pos = child.start_point
+                    metric = pos[1] - enclosing_function_node.start_point[1]
+                    metrics.append((enclosing_function_name, pre_log.copy(), metric))
+                    break
+            else:
+                pre_log.append(function_name)
+    else:
+        pre_log.append(function_name)
 
     return metrics
 
 
 def find_func_calls_in_functions(root_node, lines, target_function, target_parameter):
     function_metrics = {}
-    enclosing_function_node, enclosing_function_name = None, None
-    def find_func_calls(source_code, node, function_name):
+
+    def find_func_calls(source_code, node, pre_log):
         metrics = []
         for child in node.children:
             if child.type == "call_expression":
-                metrics.extend(handle_call_expression(source_code,  enclosing_function_node, enclosing_function_name, child, target_function, target_parameter))
+                metrics += handle_call_expression(source_code, enclosing_function_node, enclosing_function_name, child,
+                                                  target_function, target_parameter, pre_log)
+            elif child.type == "function_definition":
+                return []
 
-
-            metrics.extend(find_func_calls(source_code, child, function_name))
+            metrics += find_func_calls(source_code, child, pre_log)
         return metrics
 
     for node in root_node.children:
         if node.type == "function_definition":
-
-            # get function name
             source_code = "\n".join(lines).encode("utf-8")
             function_name = get_function_name(source_code, node)
             logger.info(f"Analyzing function {function_name}...")
-            enclosing_function_name = function_name
+
             enclosing_function_node = node
-            function_metrics[function_name] = find_func_calls(source_code, node, function_name)
+            enclosing_function_name = function_name
+            pre_log = []
+            function_metrics[function_name] = find_func_calls(source_code, node, pre_log)
 
     return function_metrics
 
@@ -151,15 +168,16 @@ def analyze_code(csv_path, binary_name, code: str, target_function, target_param
         if len(metrics) == 0:
             continue
 
-        line, metric = metrics[0][0], metrics[0][1]
-        print(f"Function call at line: {line}, metric: {metric}")
+        print(f"Metrics for function {function}: {metrics}")
+        line, functions_called_before, metric = metrics[0][0], metrics[0][1], metrics[0][2]
+        print(f"Match found in function: {line}, metric: {metric}, functions called before: {functions_called_before}")
         with open(csv_path, "a") as f:
-            f.write(f"{binary_name},{function},{line},{metric}\n")
+            f.write(f"{binary_name},{function},{metric},{functions_called_before}\n")
 
     return metrics_array
 
 
-def decompile(binary: str) -> str:
+def decompile(binary: str) -> (str, str):
 
     """
     Decompiles the given binary and returns the decompiled code.
@@ -167,9 +185,10 @@ def decompile(binary: str) -> str:
     :return: the decompiled code
     """
 
-    idat_path = "idat64" if is_64bit(binary) else "idat"
 
     try:
+        idat_path = "idat64" if is_64bit(binary) else "idat"
+
         logger.info(f"Decompiling {binary}...")
         output_file = tempfile.NamedTemporaryFile(suffix=".c", delete=False)
         command = f"{idat_path} -Ohexrays:{output_file.name}:ALL -A {binary}"
@@ -180,7 +199,7 @@ def decompile(binary: str) -> str:
             return f.read(), output_file.name
     except:
         logger.error(f"Exception while decompiling {binary}: {traceback.format_exc()}")
-        return "", output_file.name
+        return "", ""
 
 
 def read_cache(cache_file: str) -> dict:
@@ -225,5 +244,6 @@ def batch_decompile(binaries: list, cache_file="decompile_cache.json") -> typing
             # and returns the path to this file
             cache_data[binary] = decompiled_path
 
-    write_cache(cache_file, cache_data)
+            write_cache(cache_file, cache_data)
+
     return cache_data

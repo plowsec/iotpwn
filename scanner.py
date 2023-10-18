@@ -26,6 +26,7 @@ def main():
     parser.add_argument("-D", "--decompile", action="store_true", help="Decompile and analyze all binaries in the folder")
     parser.add_argument("-p", "--parameter", help="Parameter to search for in the function call", default="")
     parser.add_argument("-E", "--extensions", help="Extensions to search for in the folder", default="")
+    parser.add_argument("-S", "--skip-analysis", action="store_true", help="Skip the analysis of the binaries")
     args = parser.parse_args()
 
     if args.binary:
@@ -48,19 +49,12 @@ def main():
 
     elif args.directory and args.decompile:
 
-        # check arguments
-        if not args.function:
-            logger.error("Please provide a function name with -f")
-            return
 
-        if len(args.parameter) == 0:
-            logger.error("Please provide a parameter name with -p")
-            return
 
         logger.info("Saving results to results.csv")
         # create a csv file
         with open("results.csv", "w") as f:
-            f.write("Binary,Function,Line,Metric\n")
+            f.write("Binary,Function,Metric,Functions Called\n")
 
         binaries = FwRecon.enumerate_binaries(args.directory, args.extensions)
         decompiled_codes = batch_decompile(binaries)
@@ -69,8 +63,18 @@ def main():
             with open(code, "r") as f:
                 decompiled_code = f.read()
 
+            # check arguments
+            if args.skip_analysis:
+               continue
+
+            # this was used to analyze iotfirmware and show all functions called until a specific function is called
+            if not args.function:
+                logger.error("Please provide a function name with -f")
+                return
+
             logger.info(f"Analyzing {binary}...")
             analyze_code("results.csv", binary, decompiled_code, args.function, args.parameter)
+        return
 
     elif args.directory and args.recon2:
         binaries = FwRecon.enumerate_binaries(args.directory)
